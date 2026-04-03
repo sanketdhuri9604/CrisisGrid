@@ -3,75 +3,100 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Building2, Package, Database, ThumbsUp, ThumbsDown, ShieldCheck, LogOut, AlertTriangle, CheckCircle } from 'lucide-react';
-import { supabase } from '../utils/supabaseClient';
+import { auth, db } from '../utils/firebaseClient';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { collection, getDocs, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 
 export default function PharmacyNGO() {
   const router = useRouter();
   const [isAuthed, setIsAuthed] = useState(false);
   const [userEmail, setUserEmail] = useState('');
   const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const [resources, setResources] = useState([
-    { id: 1, name: 'Apollo Pharmacy Sector 7', resource: 'First Aid Kits', qty: 50, confidence: 75, voted: null },
-    { id: 2, name: 'Camp A Relief Team', resource: 'Food Packets', qty: 120, confidence: 92, voted: null },
-    { id: 3, name: 'Govandi Public Shelter', resource: 'Oxygen Cylinders', qty: 3, confidence: 45, voted: null }
-  ]);
+  const [resources, setResources] = useState([]);
 
   const [orgName, setOrgName] = useState('');
   const [resourceType, setResourceType] = useState('First Aid Kits');
   const [qty, setQty] = useState('');
 
   useEffect(() => {
-    if (!supabase) {
+    if (!auth) {
       setIsAuthed(true);
       return;
     }
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
         setIsAuthed(true);
-        setUserEmail(session.user.email);
+        setUserEmail(user.email || '');
       } else {
         router.push('/login');
       }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session) router.push('/login');
-    });
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, [router]);
 
+  // Firestore se data load karo
+  useEffect(() => {
+    if (!isAuthed) return;
+    const fetchResources = async () => {
+      setLoading(true);
+      try {
+        if (db) {
+          const snap = await getDocs(collection(db, 'pharmacy_resources'));
+          const data = snap.docs.map(d => ({ id: d.id, voted: null, ...d.data() }));
+          setResources(data);
+        }
+      } catch (err) {
+        console.error('Failed to load resources:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchResources();
+  }, [isAuthed]);
+
   const handleLogout = async () => {
-    if (supabase) await supabase.auth.signOut();
+    if (auth) await signOut(auth);
     router.push('/login');
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    // Add newly logged resource to the crowd verification list
-    setResources(prev => [...prev, {
-      id: Date.now(),
+    const newResource = {
       name: orgName,
       resource: resourceType,
       qty: parseInt(qty),
       confidence: 60,
-      voted: null
-    }]);
-    setSuccess(true);
-    setOrgName(''); setQty('');
-    setTimeout(() => setSuccess(false), 4000);
+      createdAt: serverTimestamp(),
+    };
+    try {
+      if (db) {
+        const docRef = await addDoc(collection(db, 'pharmacy_resources'), newResource);
+        setResources(prev => [...prev, { id: docRef.id, voted: null, ...newResource }]);
+      } else {
+        setResources(prev => [...prev, { id: Date.now(), voted: null, ...newResource }]);
+      }
+      setSuccess(true);
+      setOrgName(''); setQty('');
+      setTimeout(() => setSuccess(false), 4000);
+    } catch (err) {
+      console.error('Submit error:', err);
+    }
   };
 
-  const handleVote = (id, isValid) => {
+  const handleVote = async (id, isValid) => {
     setResources(prev => prev.map(r => {
       if (r.id === id) {
         const newConf = isValid ? Math.min(100, r.confidence + 15) : Math.max(0, r.confidence - 25);
+        // Firestore update
+        if (db) updateDoc(doc(db, 'pharmacy_resources', id), { confidence: newConf }).catch(console.error);
         return { ...r, confidence: newConf, voted: isValid ? 'yes' : 'no' };
       }
       return r;
     }));
   };
 
-  // Show loading while Supabase checks session (redirects to /login if no session)
   if (!isAuthed) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -83,7 +108,6 @@ export default function PharmacyNGO() {
     );
   }
 
-  // ─── PORTAL ───────────────────────────────────────────────────────────────
   return (
     <div className="container" style={{ paddingTop: '2rem', paddingBottom: '4rem' }}>
 
@@ -155,7 +179,11 @@ export default function PharmacyNGO() {
               <ShieldCheck size={20} color="var(--brand-success)" /> Crowd Verification Index
             </h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {resources.map((res, i) => {
+              {loading ? (
+                <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>Loading inventory...</div>
+              ) : resources.length === 0 ? (
+                <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem', opacity: 0.7 }}>No inventory logged yet.</div>
+              ) : resources.map((res) => {
                 const confColor = res.confidence > 80 ? 'var(--brand-success)' : res.confidence < 50 ? 'var(--brand-danger)' : 'var(--brand-warning)';
                 return (
                   <div key={res.id} className="animate-slide-up delay-1 neon-border" style={{ padding: '1.25rem', background: 'rgba(5, 8, 15, 0.4)', borderRadius: '14px', borderLeft: `4px solid ${confColor}` }}>
@@ -168,7 +196,6 @@ export default function PharmacyNGO() {
                     <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
                       <strong style={{ color: 'white', fontWeight: 700 }}>{res.qty} {res.resource}</strong> logged
                     </p>
-                    {/* Confidence bar */}
                     <div style={{ height: '4px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px', marginBottom: '1rem', overflow: 'hidden' }}>
                       <div style={{ height: '100%', width: `${res.confidence}%`, background: confColor, borderRadius: '2px', transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)', boxShadow: `0 0 10px ${confColor}` }} />
                     </div>

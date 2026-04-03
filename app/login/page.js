@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert, Mail, Lock, Eye, EyeOff, AlertTriangle, LogIn } from 'lucide-react';
-import { supabase } from '../utils/supabaseClient';
+import { auth } from '../utils/firebaseClient';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,15 +16,14 @@ export default function LoginPage() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!supabase) {
-      setError('Supabase is not configured. Please check your .env.local file.');
+    if (!auth) {
+      setError('Firebase Auth is not configured. Please check your .env.local file.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
-      if (authError) throw authError;
+      await signInWithEmailAndPassword(auth, email, password);
       // Redirect based on role (use email prefix as simple role check)
       if (email.startsWith('ngo') || email.includes('pharmacy')) {
         router.push('/pharmacy');
@@ -139,7 +139,7 @@ export default function LoginPage() {
         <div style={{ marginTop: '2rem', padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
             <strong style={{ color: 'rgba(255,255,255,0.5)' }}>To create admin accounts:</strong><br />
-            Go to your Supabase Dashboard → Authentication → Users → Add User.<br />
+            Go to your Firebase Console → Authentication → Users → Add User.<br />
             Use <code style={{ background: 'rgba(255,255,255,0.08)', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>admin@crisisgrid.com</code> for Admin access and <code style={{ background: 'rgba(255,255,255,0.08)', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>ngo@crisisgrid.com</code> for NGO access.
           </p>
         </div>

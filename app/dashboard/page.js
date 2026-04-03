@@ -4,7 +4,9 @@ import dynamic from 'next/dynamic';
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert, Filter, Clock, MapPin, CheckCircle, AlertTriangle, UserCheck, RefreshCw, LogOut } from 'lucide-react';
-import { supabase } from '../utils/supabaseClient';
+import { auth, db } from '../utils/firebaseClient';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 
 const Map = dynamic(() => import('../components/Map'), { ssr: false, loading: () => <div className="glass" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Map Engine...</div> });
 
@@ -19,70 +21,51 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
-    if (!supabase) {
-      // No Supabase — allow access in offline demo mode
+    if (!auth) {
+      // No Firebase Auth — allow access in offline demo mode
       setIsAuthed(true);
       return;
     }
-    // Check existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
         setIsAuthed(true);
-        setUserEmail(session.user.email);
+        setUserEmail(user.email || '');
       } else {
         router.push('/login');
       }
     });
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) {
-        setIsAuthed(true);
-        setUserEmail(session.user.email);
-      } else {
-        setIsAuthed(false);
-        router.push('/login');
-      }
-    });
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, [router]);
 
   const handleLogout = async () => {
-    if (supabase) await supabase.auth.signOut();
+    if (auth) await signOut(auth);
     router.push('/login');
   };
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      // Always read localStorage first (works even without Supabase tables)
+      // Always read localStorage first (works even without Firestore data)
       const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
 
-      if (supabase) {
-        const { data: sosData, error: sosError } = await supabase
-          .from('sos_requests')
-          .select('*')
-          .order('created_at', { ascending: false });
+      if (db) {
+        const [sosSnap, volSnap] = await Promise.all([
+          getDocs(collection(db, 'sos_requests')),
+          getDocs(collection(db, 'volunteers')),
+        ]);
 
-        if (!sosError && sosData) {
-          // Merge Supabase + localStorage, deduplicate by id
-          const combined = [...sosData, ...local];
-          const unique = combined.filter((item, idx, self) =>
-            idx === self.findIndex(t => t.id === item.id)
-          );
-          setRequests(unique);
-        } else {
-          // Supabase error (table not set up yet) — use localStorage only
-          setRequests(local);
-        }
+        const sosData = sosSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
+        const volData = volSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
 
-        const { data: volData, error: volError } = await supabase
-          .from('volunteers')
-          .select('*')
-          .order('trust_score', { ascending: false })
-          .limit(10);
-        if (!volError && volData) setVolunteers(volData);
+        // Merge Firestore + localStorage, deduplicate by id
+        const combined = [...sosData, ...local];
+        const unique = combined.filter((item, idx, self) =>
+          idx === self.findIndex(t => t.id === item.id)
+        );
+        setRequests(unique);
+        setVolunteers(volData);
       } else {
-        // No Supabase client available
+        // No Firestore client available
         setRequests(local);
       }
       setLastUpdated(new Date());
@@ -102,23 +85,11 @@ export default function Dashboard() {
     // Listen to local SOS writes (fired by offlineSync.transmitSOS)
     window.addEventListener('sos-updated', loadData);
 
-    // Also subscribe to Supabase realtime if available
-    if (supabase) {
-      const channel = supabase
-        .channel('dashboard-realtime')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'sos_requests' }, loadData)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'volunteers' }, loadData)
-        .subscribe();
-      return () => {
-        supabase.removeChannel(channel);
-        window.removeEventListener('sos-updated', loadData);
-      };
-    }
     return () => window.removeEventListener('sos-updated', loadData);
   }, [isAuthed, loadData]);
 
   const handleAssign = async (reqId) => {
-    if (supabase) await supabase.from('sos_requests').update({ status: 'assigned' }).eq('id', reqId);
+    if (db) await updateDoc(doc(db, 'sos_requests', reqId), { status: 'assigned' });
     setRequests(prev => prev.map(r => r.id === reqId ? { ...r, status: 'assigned' } : r));
   };
 
@@ -126,7 +97,7 @@ export default function Dashboard() {
   const pendingCount = requests.filter(r => r.status === 'pending').length;
   const isHighRisk = pendingCount > 2;
 
-  // Show loading while Supabase checks session (redirects to /login if no session)
+  // Show loading while Firebase checks session (redirects to /login if no session)
   if (!isAuthed) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -148,10 +119,10 @@ export default function Dashboard() {
           <h1 style={{ fontSize: '1.625rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <ShieldAlert color="var(--brand-danger)" size={26} /> Admin Command Center
           </h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.75rem', background: supabase ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', border: `1px solid ${supabase ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`, borderRadius: '50px' }}>
-            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: supabase ? 'var(--brand-success)' : 'var(--brand-warning)', boxShadow: supabase ? '0 0 6px var(--brand-success)' : 'none' }} />
-            <span style={{ fontSize: '0.7rem', fontWeight: 700, color: supabase ? 'var(--brand-success)' : 'var(--brand-warning)' }}>
-              {supabase ? 'SUPABASE LIVE' : 'OFFLINE'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.75rem', background: db ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', border: `1px solid ${db ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`, borderRadius: '50px' }}>
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: db ? 'var(--brand-success)' : 'var(--brand-warning)', boxShadow: db ? '0 0 6px var(--brand-success)' : 'none' }} />
+            <span style={{ fontSize: '0.7rem', fontWeight: 700, color: db ? 'var(--brand-success)' : 'var(--brand-warning)' }}>
+              {db ? 'FIREBASE LIVE' : 'OFFLINE'}
             </span>
           </div>
         </div>

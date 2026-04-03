@@ -37,7 +37,7 @@ export async function POST(req) {
           content: `Classify the priority of this emergency request: "${description}"`
         }
       ],
-      model: "llama3-8b-8192", // Using an extremely fast Groq model for realtime latency
+      model: "llama-3.3-70b-versatile", // Using an extremely fast Groq model for realtime latency
       temperature: 0.1, // Low temp for deterministic classification
       max_tokens: 5,
     });

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
+    "firebase": "^12.11.0",
     "groq-sdk": "^1.1.2",
     "i18next": "^26.0.3",
     "idb": "^8.0.3",

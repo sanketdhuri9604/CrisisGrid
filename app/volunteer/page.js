@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { QrCode, User, MapPin, CheckCircle, Shield, Navigation, AlertTriangle, UploadCloud, Activity, Globe, Clock, Bell } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { supabase } from '../utils/supabaseClient';
+import { db } from '../utils/firebaseClient';
+import { collection, addDoc, query, where, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
 
 // ─── Haversine Distance Calculator (km) ──────────────────────────────────────
 function getDistanceKm(lat1, lng1, lat2, lng2) {
@@ -45,15 +46,15 @@ export default function VolunteerDashboard() {
       (pos) => {
         const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setVolunteerLocation(loc);
-        // Sync to Supabase every position update
-        if (supabase && regData.name) {
-          supabase.from('volunteers').upsert({
+        // Sync to Firestore every position update
+        if (db && regData.name) {
+          setDoc(doc(db, 'volunteers', regData.name), {
             name: regData.name,
             lat: loc.lat,
             lng: loc.lng,
             status: activeTask ? 'On Mission' : 'Active',
             updated_at: new Date().toISOString(),
-          }, { onConflict: 'name' }).then(() => {});
+          }, { merge: true }).catch(() => {});
         }
       },
       () => {
@@ -68,45 +69,44 @@ export default function VolunteerDashboard() {
     };
   }, [onboarded, regData.name, activeTask]);
 
-  // ─── Load SOS requests from Supabase ─────────────────────────
-  const loadRequests = useCallback(async () => {
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('sos_requests')
-        .select('*')
-        .eq('status', 'pending')
-        .order('created_at', { ascending: false });
-      if (!error && data) {
-        setRequests(data);
-        return;
-      }
-    }
-    // Local fallback
-    const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-    setRequests(local.filter(r => r.status === 'pending'));
-  }, []);
+  // ─── Load SOS requests from Firestore ─────────────────────────
+  const loadRequests = useCallback(() => {
+  if (!db) return;
+  const q = query(collection(db, 'sos_requests'), where('status', '==', 'pending'));
+  const unsub = onSnapshot(q, (snapshot) => {
+    const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    setRequests(data);
+  });
+  return unsub;
+}, []);
 
-  useEffect(() => {
-    if (!onboarded) return;
-    loadRequests();
-    
-    // Listen to local fallbacks
-    window.addEventListener('sos-updated', loadRequests);
-    
-    // Listen to Supabase Realtime across devices
-    let channel;
-    if (supabase) {
-      channel = supabase
-        .channel('volunteer-realtime')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'sos_requests' }, loadRequests)
-        .subscribe();
-    }
-    
-    return () => {
-      window.removeEventListener('sos-updated', loadRequests);
-      if (channel) supabase.removeChannel(channel);
-    };
-  }, [onboarded, loadRequests]);
+useEffect(() => {
+  if (!onboarded) return;
+  if (!navigator.geolocation) return;
+
+  locationWatchRef.current = navigator.geolocation.watchPosition(
+    async (pos) => {
+      const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setVolunteerLocation(loc);
+      if (db && regData.name) {
+        await setDoc(doc(db, 'volunteers', regData.name), {
+          name: regData.name,
+          lat: loc.lat,
+          lng: loc.lng,
+          status: activeTask ? 'On Mission' : 'Active',
+          updated_at: new Date().toISOString(),
+        }, { merge: true });
+      }
+    },
+    () => setVolunteerLocation({ lat: 19.0760, lng: 72.8777 }),
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+  );
+
+  return () => {
+    if (locationWatchRef.current) 
+      navigator.geolocation.clearWatch(locationWatchRef.current);
+  };
+}, [onboarded, regData.name, activeTask]);
 
   // ─── 20-min countdown + 15-min reminder ──────────────────────
   useEffect(() => {
@@ -153,14 +153,23 @@ export default function VolunteerDashboard() {
     : 'var(--brand-success)';
 
   // ─── Registration / QR ───────────────────────────────────────
-  const handleRegister = (e) => {
-    e.preventDefault();
-    const qrPayload = JSON.stringify({ ...regData, id: Date.now() });
-    setGeneratedQRValue(qrPayload);
-    localStorage.setItem('cached_qr_decryption', JSON.stringify(regData));
-    setAuthMode('show_qr');
-  };
+  const handleRegister = async (e) => {
+  e.preventDefault();
+  const qrPayload = JSON.stringify({ ...regData, id: Date.now() });
+  setGeneratedQRValue(qrPayload);
+  localStorage.setItem('cached_qr_decryption', JSON.stringify(regData));
 
+  if (db) {
+    await setDoc(doc(db, 'volunteers', regData.name), {
+      name: regData.name,
+      skills: regData.skills,
+      status: 'Active',
+      trust_score: 100,
+      updated_at: new Date().toISOString(),
+    });
+  }
+  setAuthMode('show_qr');
+};
   const handleQRUpload = (e) => {
     if (!e.target.files?.length) return;
     setScanning(true);
@@ -176,26 +185,25 @@ export default function VolunteerDashboard() {
 
   // ─── Task Actions ─────────────────────────────────────────────
   const updateTaskStatus = async (id, newStatus) => {
-    if (supabase) {
-      await supabase.from('sos_requests').update({ status: newStatus }).eq('id', id);
-    }
-    const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-    localStorage.setItem('local_sos_requests', JSON.stringify(local.map(r => r.id === id ? { ...r, status: newStatus } : r)));
-    setRequests(prev => prev.filter(r => r.id !== id));
-    window.dispatchEvent(new Event('sos-updated'));
-  };
+  if (db) {
+    await updateDoc(doc(db, 'sos_requests', id), { status: newStatus });
+  }
+  const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
+  localStorage.setItem('local_sos_requests', JSON.stringify(
+    local.map(r => r.id === id ? { ...r, status: newStatus } : r)
+  ));
+  setRequests(prev => prev.filter(r => r.id !== id));
+  window.dispatchEvent(new Event('sos-updated'));
+};
 
   const syncTrustScore = async (name, completed, assigned) => {
-    if (!supabase || !name) return;
-    const score = assigned > 0 ? Math.round((completed / assigned) * 100) : 100;
-    await supabase.from('volunteers').upsert({
-      name,
-      trust_score: score,
-      skills: regData.skills,
-      status: 'Active',
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'name' });
-  };
+  if (!db || !name) return;
+  const score = assigned > 0 ? Math.round((completed / assigned) * 100) : 100;
+  await setDoc(doc(db, 'volunteers', name), {
+    trust_score: score,
+    updated_at: new Date().toISOString(),
+  }, { merge: true });
+};
 
   const handleAssign = (req) => {
     setActiveTask(req);
