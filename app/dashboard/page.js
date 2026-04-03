@@ -57,12 +57,8 @@ export default function Dashboard() {
         const sosData = sosSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
         const volData = volSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
 
-        // Merge Firestore + localStorage, deduplicate by id
-        const combined = [...sosData, ...local];
-        const unique = combined.filter((item, idx, self) =>
-          idx === self.findIndex(t => t.id === item.id)
-        );
-        setRequests(unique);
+        // Use Firestore as the complete source of truth when online
+        setRequests(sosData);
         setVolunteers(volData);
       } else {
         // No Firestore client available
