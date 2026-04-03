@@ -11,27 +11,27 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const hasConfig = Boolean(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
+const hasConfig = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId &&
+  firebaseConfig.appId
+);
+
 let app = null;
 let authInstance = null;
 
 if (typeof window !== 'undefined' && hasConfig) {
-  // 🔥 AUTOCLEAR GHOST DATA: Programmatically wipe the old global IndexedDB tokens 
-  // so the user doesn't have to manually press F12 and delete it.
-  try {
-    window.indexedDB.deleteDatabase('firebaseLocalStorageDb');
-  } catch(e) {}
+  // ❌ REMOVED: indexedDB.deleteDatabase — yeh har load pe tokens wipe karta tha
 
   if (getApps().length === 0) {
     app = initializeApp(firebaseConfig);
-    // Explicitly enforce session-only auth BEFORE it ever touches any DB
     authInstance = initializeAuth(app, { persistence: browserSessionPersistence });
   } else {
     app = getApps()[0];
     authInstance = getAuth(app);
   }
 } else if (hasConfig) {
-  // Server-side fallback
   app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
   authInstance = getAuth(app);
 }

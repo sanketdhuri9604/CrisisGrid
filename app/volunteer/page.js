@@ -34,42 +34,55 @@ export default function VolunteerDashboard() {
   const [reminderSent, setReminderSent] = useState(false);
   const [showReminder, setShowReminder] = useState(false);
   const timerRef = useRef(null);
+  const reminderSentRef = useRef(false);
   const locationWatchRef = useRef(null);
 
   // ─── Auth State Listener ────────────────────────────── ✅ FIXED
   useEffect(() => {
     if (!auth) return;
     const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setUid(user.uid);
-        if (db) {
-          try {
-            const docSnap = await getDoc(doc(db, 'volunteers', user.uid));
-            if (docSnap.exists()) {
-              const d = docSnap.data();
-              setRegData(prev => ({ ...prev, name: d.name || '', skills: d.skills || [], experience_level: d.experience_level || 'Intermediate', email: user.email }));
-            } else {
-              // First-time login with no Firestore record yet
-              await setDoc(doc(db, 'volunteers', user.uid), {
-                name: '',
-                email: user.email,
-                skills: [],
-                experience_level: 'Intermediate',
-                trust_score: 100,
-                status: 'Active',
-                updated_at: new Date().toISOString(),
-              }, { merge: true });
-            }
-          } catch (err) {
-            console.error('Profile load error:', err);
-          }
-        }
-        setOnboarded(true);
-      } else {
+      if (!user) {
         setOnboarded(false);
         setUid('');
         setRegData({ email: '', password: '', name: '', skills: [], experience_level: 'Intermediate' });
+        return;
       }
+
+      if (db) {
+        try {
+          const snap = await getDoc(doc(db, 'users', user.uid));
+          if (!snap.exists() || snap.data().role !== 'volunteer') {
+            await signOut(auth);
+            return;
+          }
+        } catch (e) {
+          console.error('Role check failed:', e);
+        }
+      }
+
+      if (db) {
+        try {
+          const docSnap = await getDoc(doc(db, 'volunteers', user.uid));
+          const email = user.email || '';
+
+          if (docSnap.exists()) {
+            const d = docSnap.data();
+            setRegData(prev => ({ ...prev, name: d.name || '', skills: d.skills || [], experience_level: d.experience_level || 'Intermediate', email }));
+          } else {
+            await setDoc(doc(db, 'users', user.uid), {
+              role: 'volunteer',
+              email,
+            }, { merge: true });
+            setRegData(prev => ({ ...prev, email }));
+          }
+
+          setUid(user.uid);
+        } catch (err) {
+          console.error('Profile load error:', err);
+        }
+      }
+
+      setOnboarded(true);
     });
     return () => unsub();
   }, []);
@@ -125,17 +138,20 @@ export default function VolunteerDashboard() {
       clearInterval(timerRef.current);
       setTimeLeft(null);
       setReminderSent(false);
+      reminderSentRef.current = false;
       setShowReminder(false);
       return;
     }
     setTimeLeft(TASK_TIMEOUT_SECS);
     setReminderSent(false);
+    reminderSentRef.current = false;
 
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) { clearInterval(timerRef.current); return 0; }
         const next = prev - 1;
-        if (next === TASK_TIMEOUT_SECS - REMINDER_SECS && !reminderSent) {
+        if (next === TASK_TIMEOUT_SECS - REMINDER_SECS && !reminderSentRef.current) {
+          reminderSentRef.current = true;
           setReminderSent(true);
           setShowReminder(true);
           setTimeout(() => setShowReminder(false), 8000);
@@ -509,7 +525,7 @@ export default function VolunteerDashboard() {
                     </div>
                   </div>
                 )}
-                {aiSuggestedTask.notes && <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.75rem 0 0' }}>"{aiSuggestedTask.notes}"</p>}
+                {aiSuggestedTask.notes && <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.75rem 0 0' }}>&quot;{aiSuggestedTask.notes}&quot;</p>}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: '0.75rem 0 1.25rem', lineHeight: 1.5 }}>
                   {aiSuggestedTask.description?.split('📍 Location:')[0].trim()}
                 </p>
@@ -546,7 +562,7 @@ export default function VolunteerDashboard() {
                     {req.description.split('📍 Location:')[1].trim()}
                   </p>
                 )}
-                {req.notes && <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>"{req.notes}"</p>}
+                {req.notes && <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>&quot;{req.notes}&quot;</p>}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.75rem', lineHeight: 1.4 }}>
                   {req.description ? req.description.split('📍 Location:')[0].trim() : 'No additional description.'}
                 </p>
@@ -600,9 +616,9 @@ export default function VolunteerDashboard() {
                     </p>
                   </div>
                 )}
-                {activeTask.notes && <p style={{ fontSize: '0.875rem', fontStyle: 'italic', color: 'var(--text-secondary)', textAlign: 'center', marginBottom: '0.5rem' }}>"{activeTask.notes}"</p>}
+                {activeTask.notes && <p style={{ fontSize: '0.875rem', fontStyle: 'italic', color: 'var(--text-secondary)', textAlign: 'center', marginBottom: '0.5rem' }}>&quot;{activeTask.notes}&quot;</p>}
                 <p style={{ fontSize: '0.875rem', fontStyle: 'italic', color: 'var(--brand-warning)', lineHeight: 1.5, textAlign: 'center' }}>
-                  "{activeTask.description?.split('📍 Location:')[0].trim()}"
+                  &quot;{activeTask.description?.split('📍 Location:')[0].trim()}&quot;
                 </p>
                 {activeTask.lat && activeTask.lng && (
                   <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.75rem', textAlign: 'center' }}>

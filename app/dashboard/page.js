@@ -13,28 +13,30 @@ const Map = dynamic(() => import('../components/Map'), { ssr: false, loading: ()
 export default function Dashboard() {
   const router = useRouter();
   const [filter, setFilter] = useState('ALL');
-  const [requests, setRequests] = useState([]);
+  const [requests, setRequests] = useState(() => {
+    if (typeof window === 'undefined' || auth) return [];
+    try {
+      return JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
+    } catch {
+      return [];
+    }
+  });
   const [volunteers, setVolunteers] = useState([]);
-  const [isAuthed, setIsAuthed] = useState(false);
+  const [isAuthed, setIsAuthed] = useState(() => !auth);
   const [userEmail, setUserEmail] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!auth && !!db);
   const [lastUpdated, setLastUpdated] = useState(null);
   const unsubRefs = useRef([]);
 
   // ─── Auth Gate ────────────────────────────────────────────────
   useEffect(() => {
-    if (!auth) {
-      setIsAuthed(true);
-      return;
-    }
+    if (!auth) return;
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         if (db) {
           try {
-            const snap = await getDoc(doc(db, 'volunteers', user.uid));
-            const role = snap.exists() ? (snap.data().role || 'admin') : 'admin';
-            
-            if (role !== 'admin') {
+            const snap = await getDoc(doc(db, 'users', user.uid));
+            if (!snap.exists() || snap.data().role !== 'admin') {
               console.warn('Unauthorized access blocked. Requires Admin roles.');
               router.push('/login');
               return;
@@ -61,14 +63,8 @@ export default function Dashboard() {
   useEffect(() => {
     if (!isAuthed) return;
 
-    setLoading(true);
-
     if (!db) {
       // Offline mode — read from localStorage
-      const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-      setRequests(local);
-      setLoading(false);
-
       const handleLocalUpdate = () => {
         const updated = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
         setRequests(updated);
@@ -222,7 +218,7 @@ export default function Dashboard() {
               )}
 
               {req.notes && (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>"{req.notes}"</p>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>&quot;{req.notes}&quot;</p>
               )}
 
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.85rem', lineHeight: 1.4 }}>

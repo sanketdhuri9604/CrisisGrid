@@ -29,10 +29,8 @@ export default function PharmacyNGO() {
       if (user) {
         if (db) {
           try {
-            const snap = await getDoc(doc(db, 'volunteers', user.uid));
-            const role = snap.exists() ? (snap.data().role || 'admin') : 'admin';
-            
-            if (role !== 'pharmacy' && role !== 'ngo') {
+           const snap = await getDoc(doc(db, 'users', user.uid));
+            if (!snap.exists() || (snap.data().role !== 'pharmacy' && snap.data().role !== 'ngo')) {
               console.warn('Unauthorized access blocked. Requires Pharmacy/NGO roles.');
               router.push('/login');
               return;
@@ -74,7 +72,7 @@ export default function PharmacyNGO() {
       }
     };
     fetchResources();
-  }, [isAuthed]);
+  }, [isAuthed, userEmail]);
 
   const handleLogout = async () => {
     if (auth) await signOut(auth);
