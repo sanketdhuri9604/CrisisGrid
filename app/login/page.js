@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert, Mail, Lock, Eye, EyeOff, AlertTriangle, LogIn } from 'lucide-react';
-import { auth } from '../utils/firebaseClient';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { auth, db } from '../utils/firebaseClient';
+import { signInWithEmailAndPassword, setPersistence, browserSessionPersistence } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,9 +24,17 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      // Redirect based on role (use email prefix as simple role check)
-      if (email.startsWith('ngo') || email.includes('pharmacy')) {
+      await setPersistence(auth, browserSessionPersistence);
+      const userCred = await signInWithEmailAndPassword(auth, email, password);
+      // ✅ FIX: Read role from Firestore volunteer document — not email prefix
+      let role = 'admin';
+      if (db) {
+        try {
+          const snap = await getDoc(doc(db, 'volunteers', userCred.user.uid));
+          if (snap.exists()) role = snap.data().role || 'admin';
+        } catch (_) {}
+      }
+      if (role === 'ngo' || role === 'pharmacy') {
         router.push('/pharmacy');
       } else {
         router.push('/dashboard');

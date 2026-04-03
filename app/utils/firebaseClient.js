@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeAuth, browserSessionPersistence, getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -12,7 +12,29 @@ const firebaseConfig = {
 };
 
 const hasConfig = Boolean(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
-const app = getApps().length === 0 && hasConfig ? initializeApp(firebaseConfig) : getApps()[0] || null;
+let app = null;
+let authInstance = null;
 
-export const auth = app ? getAuth(app) : null;
+if (typeof window !== 'undefined' && hasConfig) {
+  // 🔥 AUTOCLEAR GHOST DATA: Programmatically wipe the old global IndexedDB tokens 
+  // so the user doesn't have to manually press F12 and delete it.
+  try {
+    window.indexedDB.deleteDatabase('firebaseLocalStorageDb');
+  } catch(e) {}
+
+  if (getApps().length === 0) {
+    app = initializeApp(firebaseConfig);
+    // Explicitly enforce session-only auth BEFORE it ever touches any DB
+    authInstance = initializeAuth(app, { persistence: browserSessionPersistence });
+  } else {
+    app = getApps()[0];
+    authInstance = getAuth(app);
+  }
+} else if (hasConfig) {
+  // Server-side fallback
+  app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+  authInstance = getAuth(app);
+}
+
+export const auth = authInstance;
 export const db = app ? getFirestore(app) : null;

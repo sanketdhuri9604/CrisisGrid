@@ -1,12 +1,12 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { ShieldAlert, Filter, Clock, MapPin, CheckCircle, AlertTriangle, UserCheck, RefreshCw, LogOut } from 'lucide-react';
+import { ShieldAlert, Clock, MapPin, CheckCircle, AlertTriangle, UserCheck, RefreshCw, LogOut } from 'lucide-react';
 import { auth, db } from '../utils/firebaseClient';
+import { collection, query, where, onSnapshot, updateDoc, doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 
 const Map = dynamic(() => import('../components/Map'), { ssr: false, loading: () => <div className="glass" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Map Engine...</div> });
 
@@ -19,22 +19,37 @@ export default function Dashboard() {
   const [userEmail, setUserEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const unsubRefs = useRef([]);
 
+  // ─── Auth Gate ────────────────────────────────────────────────
   useEffect(() => {
     if (!auth) {
-      // No Firebase Auth — allow access in offline demo mode
       setIsAuthed(true);
       return;
     }
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        if (db) {
+          try {
+            const snap = await getDoc(doc(db, 'volunteers', user.uid));
+            const role = snap.exists() ? (snap.data().role || 'admin') : 'admin';
+            
+            if (role !== 'admin') {
+              console.warn('Unauthorized access blocked. Requires Admin roles.');
+              router.push('/login');
+              return;
+            }
+          } catch (e) {
+            console.error('Role check failed:', e);
+          }
+        }
         setIsAuthed(true);
         setUserEmail(user.email || '');
       } else {
         router.push('/login');
       }
     });
-    return () => unsubscribe();
+    return () => unsub();
   }, [router]);
 
   const handleLogout = async () => {
@@ -42,47 +57,46 @@ export default function Dashboard() {
     router.push('/login');
   };
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      // Always read localStorage first (works even without Firestore data)
-      const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-
-      if (db) {
-        const [sosSnap, volSnap] = await Promise.all([
-          getDocs(collection(db, 'sos_requests')),
-          getDocs(collection(db, 'volunteers')),
-        ]);
-
-        const sosData = sosSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
-        const volData = volSnap.docs.map((record) => ({ id: record.id, ...record.data() }));
-
-        // Use Firestore as the complete source of truth when online
-        setRequests(sosData);
-        setVolunteers(volData);
-      } else {
-        // No Firestore client available
-        setRequests(local);
-      }
-      setLastUpdated(new Date());
-    } catch (err) {
-      console.error('Dashboard load error:', err);
-      const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-      setRequests(local);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // ─── Real-Time Listeners (replaces one-time getDocs) ──────────
   useEffect(() => {
     if (!isAuthed) return;
-    loadData();
 
-    // Listen to local SOS writes (fired by offlineSync.transmitSOS)
-    window.addEventListener('sos-updated', loadData);
+    setLoading(true);
 
-    return () => window.removeEventListener('sos-updated', loadData);
-  }, [isAuthed, loadData]);
+    if (!db) {
+      // Offline mode — read from localStorage
+      const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
+      setRequests(local);
+      setLoading(false);
+
+      const handleLocalUpdate = () => {
+        const updated = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
+        setRequests(updated);
+        setLastUpdated(new Date());
+      };
+      window.addEventListener('sos-updated', handleLocalUpdate);
+      return () => window.removeEventListener('sos-updated', handleLocalUpdate);
+    }
+
+    // ✅ FIX: onSnapshot replaces getDocs — dashboard now updates automatically
+    const sosUnsub = onSnapshot(collection(db, 'sos_requests'), (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setRequests(data);
+      setLastUpdated(new Date());
+      setLoading(false);
+    }, (err) => {
+      console.error('SOS listener error:', err);
+      setLoading(false);
+    });
+
+    const volUnsub = onSnapshot(collection(db, 'volunteers'), (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setVolunteers(data);
+    });
+
+    unsubRefs.current = [sosUnsub, volUnsub];
+    return () => unsubRefs.current.forEach(fn => fn());
+  }, [isAuthed]);
 
   const handleAssign = async (reqId) => {
     if (db) await updateDoc(doc(db, 'sos_requests', reqId), { status: 'assigned' });
@@ -93,7 +107,6 @@ export default function Dashboard() {
   const pendingCount = requests.filter(r => r.status === 'pending').length;
   const isHighRisk = pendingCount > 2;
 
-  // Show loading while Firebase checks session (redirects to /login if no session)
   if (!isAuthed) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -105,7 +118,6 @@ export default function Dashboard() {
     );
   }
 
-  // ─── COMMAND CENTER ──────────────────────────────────────────────────────────
   return (
     <div className="container" style={{ paddingTop: '2rem', paddingBottom: '2rem' }}>
 
@@ -116,17 +128,17 @@ export default function Dashboard() {
             <ShieldAlert color="var(--brand-danger)" size={26} /> Admin Command Center
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.75rem', background: db ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', border: `1px solid ${db ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`, borderRadius: '50px' }}>
-            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: db ? 'var(--brand-success)' : 'var(--brand-warning)', boxShadow: db ? '0 0 6px var(--brand-success)' : 'none' }} />
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: db ? 'var(--brand-success)' : 'var(--brand-warning)', boxShadow: db ? '0 0 6px var(--brand-success)' : 'none', animation: db ? 'pulseGlow 2s infinite' : 'none' }} />
             <span style={{ fontSize: '0.7rem', fontWeight: 700, color: db ? 'var(--brand-success)' : 'var(--brand-warning)' }}>
-              {db ? 'FIREBASE LIVE' : 'OFFLINE'}
+              {db ? 'LIVE — AUTO UPDATING' : 'OFFLINE MODE'}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={loadData} style={{ background: 'transparent', border: '1px solid var(--glass-border)', borderRadius: '8px', padding: '0.4rem 0.75rem', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
-            <RefreshCw size={13} /> {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Refresh'}
-          </button>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+            {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Connecting...'}
+          </span>
           <div className="glass flex items-center" style={{ padding: '0.35rem', borderRadius: '10px' }}>
             {['ALL', 'HIGH', 'MEDIUM', 'LOW'].map(f => (
               <button key={f} onClick={() => setFilter(f)} style={{ background: filter === f ? 'rgba(255,255,255,0.12)' : 'transparent', border: 'none', color: filter === f ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.3rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '0.78rem' }}>
@@ -183,7 +195,7 @@ export default function Dashboard() {
             <div className="glass" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <CheckCircle size={36} style={{ margin: '0 auto 1rem auto', color: 'var(--brand-success)', opacity: 0.4 }} />
               <p style={{ fontWeight: 600 }}>No SOS requests yet</p>
-              <p style={{ fontSize: '0.8rem', marginTop: '0.4rem', opacity: 0.6 }}>Real-time updates will appear when victims send SOS.</p>
+              <p style={{ fontSize: '0.8rem', marginTop: '0.4rem', opacity: 0.6 }}>Real-time updates will appear automatically when victims send SOS.</p>
             </div>
           ) : displayedRequests.map(req => (
             <div key={req.id} className="glass" style={{ padding: '1.25rem', flexShrink: 0, borderLeft: `4px solid ${req.priority === 'HIGH' ? 'var(--brand-danger)' : req.priority === 'MEDIUM' ? 'var(--brand-warning)' : 'var(--brand-success)'}` }}>
@@ -197,23 +209,30 @@ export default function Dashboard() {
                 </span>
               </div>
               <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.25rem' }}>{req.type || 'Emergency Signal'}</h3>
-              
-              {/* Extracted Rapido-Style Address */}
+
+              {req.phone && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--brand-warning)', margin: '0.3rem 0', fontWeight: 600 }}>📞 {req.phone}</p>
+              )}
+
               {req.description?.includes('📍 Location:') && (
                 <p style={{ fontSize: '0.8rem', color: 'white', fontWeight: 600, margin: '0.4rem 0', background: 'rgba(255,255,255,0.05)', padding: '0.4rem 0.6rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                   <MapPin size={14} color="var(--brand-primary)" />
                   {req.description.split('📍 Location:')[1].trim()}
                 </p>
               )}
-              
+
+              {req.notes && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>"{req.notes}"</p>
+              )}
+
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.85rem', lineHeight: 1.4 }}>
                 {req.description ? req.description.split('📍 Location:')[0].trim() : 'No additional description provided.'}
               </p>
-              
+
               <div className="flex justify-between items-center">
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                   <MapPin size={11} color="var(--brand-primary)" />
-                  {req.lat && req.lng ? `${parseFloat(req.lat).toFixed(4)}°, ${parseFloat(req.lng).toFixed(4)}°` : req.distance || 'No GPS'}
+                  {req.lat && req.lng ? `${parseFloat(req.lat).toFixed(4)}°, ${parseFloat(req.lng).toFixed(4)}°` : 'No GPS'}
                 </span>
                 {req.status === 'pending' || !req.status ? (
                   <button onClick={() => handleAssign(req.id)} className="btn btn-primary" style={{ padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.75rem' }}>Assign</button>
@@ -243,11 +262,11 @@ export default function Dashboard() {
             <div key={vol.id} className="glass" style={{ padding: '1rem', borderLeft: `3px solid ${vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)'}` }}>
               <div className="flex justify-between items-center" style={{ marginBottom: '0.25rem' }}>
                 <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>{vol.name}</span>
-                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)' }}>{vol.trust_score}%</span>
+                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)' }}>{vol.trust_score ?? 100}%</span>
               </div>
-              <p style={{ margin: '0 0 0.5rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>{vol.skills || 'General'} · {vol.status}</p>
+              <p style={{ margin: '0 0 0.5rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>{vol.skills || 'General'} · {vol.status || 'Active'}</p>
               <div style={{ height: '3px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px' }}>
-                <div style={{ height: '100%', width: `${vol.trust_score}%`, background: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)', borderRadius: '2px', transition: 'width 0.6s ease' }} />
+                <div style={{ height: '100%', width: `${vol.trust_score ?? 100}%`, background: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)', borderRadius: '2px', transition: 'width 0.6s ease' }} />
               </div>
             </div>
           ))}

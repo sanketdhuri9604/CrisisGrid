@@ -12,46 +12,81 @@ export async function POST(req) {
 
     const apiKey = process.env.GROQ_API_KEY;
     
-    // Robust fallback if no API key is set for demo/presentation purposes
+    // Robust fallback if no API key is set
     if (!apiKey) {
       console.warn('No GROQ_API_KEY found, using local fallback simulation.');
-      let priority = 'LOW';
+      let severity = 'low';
+      let domain = 'other';
       const d = description.toLowerCase();
-      if (d.includes('injured') || d.includes('blood') || d.includes('trapped')) priority = 'HIGH';
-      else if (d.includes('food') || d.includes('water') || d.includes('oxygen') || d.includes('shelter')) priority = 'MEDIUM';
+      if (d.includes('injured') || d.includes('blood') || d.includes('trapped')) { severity = 'critical'; domain = 'medical'; }
+      else if (d.includes('fire') || d.includes('burn')) { severity = 'high'; domain = 'fire'; }
+      else if (d.includes('food') || d.includes('water')) { severity = 'medium'; domain = 'disaster'; }
       
-      return NextResponse.json({ priority, model: 'Local Static Engine (No API Key)' });
+      return NextResponse.json({ 
+        analysis: {
+          summary: "Local fallback analysis",
+          domain: domain,
+          severity: severity,
+          signals: { symptoms: [], danger_indicators: [], people_involved: 1, urgency_keywords: [] },
+          suggested_specializations: ["General Support"]
+        },
+        priority: severity === 'critical' || severity === 'high' ? 'HIGH' : severity === 'medium' ? 'MEDIUM' : 'LOW', 
+        model: 'Local Static Engine' 
+      });
     }
 
     const groq = new Groq({ apiKey });
 
-    // AI Configuration specifically for structured single-token output
+    const systemPrompt = `You are an emergency triage AI for a disaster response platform. 
+Analyze the emergency description and return a JSON object exactly matching this schema without any markdown formatting or extra text:
+{
+  "summary": "Brief 1 sentence description of the incident",
+  "domain": "medical" | "fire" | "crime" | "disaster" | "other",
+  "severity": "low" | "medium" | "high" | "critical",
+  "signals": {
+    "symptoms": ["list", "of", "symptoms"],
+    "danger_indicators": ["list", "of", "dangers"],
+    "people_involved": 0,
+    "urgency_keywords": ["urgency", "keywords", "used"]
+  },
+  "suggested_specializations": ["Medical", "Food", "Rescue", "Shelter", "Medicine", "Elder Support", "Child Support", "Pharmacy Needed", "Blood Required", "General Support"]
+}
+NOTE FOR suggested_specializations: Select 1 to 3 relevant specializations ONLY from the exact list provided above.`;
+
     const completion = await groq.chat.completions.create({
       messages: [
-        {
-          role: "system",
-          content: "You are an emergency triage priority classifier for a disaster response app. You must respond with EXACTLY ONE WORD: 'HIGH', 'MEDIUM', or 'LOW'. \nHIGH: Life-threatening injuries, trapped people, immediate danger to life, urgent medical needs.\nMEDIUM: Food shortages, water shortages, minor injuries, shelter needed.\nLOW: Requests for information, blankets, non-urgent supplies, general assistance.\nONLY reply with the single word, nothing else."
-        },
-        {
-          role: "user",
-          content: `Classify the priority of this emergency request: "${description}"`
-        }
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Classify this emergency: "${description}"` }
       ],
-      model: "llama-3.3-70b-versatile", // Using an extremely fast Groq model for realtime latency
-      temperature: 0.1, // Low temp for deterministic classification
-      max_tokens: 5,
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.1,
+      response_format: { type: "json_object" }
     });
 
-    const responseText = completion.choices[0]?.message?.content?.trim().toUpperCase() || 'LOW';
+    const responseText = completion.choices[0]?.message?.content?.trim() || '{}';
+    let analysis;
+    try {
+      analysis = JSON.parse(responseText);
+    } catch (e) {
+      console.error("Failed to parse JSON", responseText);
+      analysis = {
+        summary: "Parse error fallback",
+        domain: "other",
+        severity: "medium",
+        signals: {},
+        suggested_specializations: ["General Support"]
+      };
+    }
+
+    // Map severity back to priority for backward compatibility with UI colors
     let priority = 'LOW';
-    
-    // Sanitize response to ensure UI stability
-    if (responseText.includes('HIGH')) priority = 'HIGH';
-    else if (responseText.includes('MEDIUM')) priority = 'MEDIUM';
+    if (analysis.severity === 'critical' || analysis.severity === 'high') priority = 'HIGH';
+    else if (analysis.severity === 'medium') priority = 'MEDIUM';
 
     return NextResponse.json({ 
+      analysis,
       priority, 
-      model: 'Groq LLaMA-3 (Realtime)' 
+      model: 'Groq LLaMA-3 (Realtime JSON)' 
     });
 
   } catch (error) {

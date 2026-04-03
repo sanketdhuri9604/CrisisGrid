@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Building2, Package, Database, ThumbsUp, ThumbsDown, ShieldCheck, LogOut, AlertTriangle, CheckCircle } from 'lucide-react';
+import { MapPin, Plus, Package, CheckCircle, Clock, Zap, LogOut, ShieldAlert, Building2, Database, ThumbsUp, ThumbsDown, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { auth, db } from '../utils/firebaseClient';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, getDocs, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, addDoc, updateDoc, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 export default function PharmacyNGO() {
   const router = useRouter();
@@ -25,8 +25,22 @@ export default function PharmacyNGO() {
       setIsAuthed(true);
       return;
     }
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        if (db) {
+          try {
+            const snap = await getDoc(doc(db, 'volunteers', user.uid));
+            const role = snap.exists() ? (snap.data().role || 'admin') : 'admin';
+            
+            if (role !== 'pharmacy' && role !== 'ngo') {
+              console.warn('Unauthorized access blocked. Requires Pharmacy/NGO roles.');
+              router.push('/login');
+              return;
+            }
+          } catch (e) {
+            console.error('Role check failed:', e);
+          }
+        }
         setIsAuthed(true);
         setUserEmail(user.email || '');
       } else {
@@ -44,7 +58,13 @@ export default function PharmacyNGO() {
       try {
         if (db) {
           const snap = await getDocs(collection(db, 'pharmacy_resources'));
-          const data = snap.docs.map(d => ({ id: d.id, voted: null, ...d.data() }));
+          const data = snap.docs.map(d => {
+            const docData = d.data();
+            const voters = docData.voters || {};
+            // Determine if the current user has already voted on this item
+            const myVote = voters[userEmail] || null;
+            return { id: d.id, voted: myVote, votersMap: voters, ...docData };
+          });
           setResources(data);
         }
       } catch (err) {
@@ -68,6 +88,7 @@ export default function PharmacyNGO() {
       resource: resourceType,
       qty: parseInt(qty),
       confidence: 60,
+      voters: {}, // Tracks who voted { "email@example.com": "yes" }
       createdAt: serverTimestamp(),
     };
     try {
@@ -86,12 +107,25 @@ export default function PharmacyNGO() {
   };
 
   const handleVote = async (id, isValid) => {
+    if (!userEmail) return; // Must have email to track vote
+
     setResources(prev => prev.map(r => {
       if (r.id === id) {
+        if (r.voted) return r; // Already voted
+
         const newConf = isValid ? Math.min(100, r.confidence + 15) : Math.max(0, r.confidence - 25);
-        // Firestore update
-        if (db) updateDoc(doc(db, 'pharmacy_resources', id), { confidence: newConf }).catch(console.error);
-        return { ...r, confidence: newConf, voted: isValid ? 'yes' : 'no' };
+        const voteValue = isValid ? 'yes' : 'no';
+        const updatedVoters = { ...(r.votersMap || {}), [userEmail]: voteValue };
+
+        // Firestore update (saving confidence and the new voter map)
+        if (db) {
+          updateDoc(doc(db, 'pharmacy_resources', id), { 
+            confidence: newConf,
+            [`voters.${userEmail.replace(/\./g, '_')}`]: voteValue // Firestore keys can't have dots sometimes, safe sanitize
+          }).catch(console.error);
+        }
+
+        return { ...r, confidence: newConf, votersMap: updatedVoters, voted: voteValue };
       }
       return r;
     }));
