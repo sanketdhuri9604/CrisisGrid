@@ -5,6 +5,7 @@ import { User, MapPin, CheckCircle, Shield, Navigation, AlertTriangle, Activity,
 import { auth, db } from '../utils/firebaseClient';
 import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, setPersistence, browserSessionPersistence } from 'firebase/auth';
+import { useRouter } from 'next/navigation';
 
 // ─── Haversine Distance Calculator (km) ──────────────────────────────────────
 function getDistanceKm(lat1, lng1, lat2, lng2) {
@@ -18,17 +19,27 @@ function getDistanceKm(lat1, lng1, lat2, lng2) {
 const TASK_TIMEOUT_SECS = 20 * 60;
 const REMINDER_SECS = 15 * 60;
 
+// 🔐 Secret passwords — sirf tujhe pata hain!
+const ROLE_PASSWORDS = {
+  'admin': 'ADMIN@2024',
+  'pharmacy': 'PHARMA@2024',
+};
+
 export default function VolunteerDashboard() {
+  const router = useRouter();
   const [onboarded, setOnboarded] = useState(false);
   const [authMode, setAuthMode] = useState('login');
   const [loadingCode, setLoadingCode] = useState(false);
   const [activeTask, setActiveTask] = useState(null);
   const [requests, setRequests] = useState([]);
-  // ✅ FIX: Added uid state — used as consistent Firestore document key
   const [uid, setUid] = useState('');
   const [regData, setRegData] = useState({ email: '', password: '', name: '', skills: [], experience_level: 'Intermediate' });
   const [volunteerLog, setVolunteerLog] = useState({ assigned: 0, completed: 0 });
   const [volunteerLocation, setVolunteerLocation] = useState(null);
+
+  // ─── Role Selection States ────────────────────────────────────────
+  const [selectedRole, setSelectedRole] = useState('volunteer');
+  const [rolePassword, setRolePassword] = useState('');
 
   const [timeLeft, setTimeLeft] = useState(null);
   const [reminderSent, setReminderSent] = useState(false);
@@ -37,7 +48,7 @@ export default function VolunteerDashboard() {
   const reminderSentRef = useRef(false);
   const locationWatchRef = useRef(null);
 
-  // ─── Auth State Listener ────────────────────────────── ✅ FIXED
+  // ─── Auth State Listener ──────────────────────────────────────────
   useEffect(() => {
     if (!auth) return;
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -51,9 +62,22 @@ export default function VolunteerDashboard() {
       if (db) {
         try {
           const snap = await getDoc(doc(db, 'users', user.uid));
-          if (!snap.exists() || snap.data().role !== 'volunteer') {
-            await signOut(auth);
-            return;
+          if (snap.exists()) {
+            const role = snap.data().role;
+            // Admin ya pharmacy hai toh unke page pe redirect karo
+            if (role === 'admin') {
+              router.push('/dashboard');
+              return;
+            }
+            if (role === 'pharmacy') {
+              router.push('/pharmacy');
+              return;
+            }
+            // Volunteer nahi hai toh sign out karo
+            if (role !== 'volunteer') {
+              await signOut(auth);
+              return;
+            }
           }
         } catch (e) {
           console.error('Role check failed:', e);
@@ -69,10 +93,6 @@ export default function VolunteerDashboard() {
             const d = docSnap.data();
             setRegData(prev => ({ ...prev, name: d.name || '', skills: d.skills || [], experience_level: d.experience_level || 'Intermediate', email }));
           } else {
-            await setDoc(doc(db, 'users', user.uid), {
-              role: 'volunteer',
-              email,
-            }, { merge: true });
             setRegData(prev => ({ ...prev, email }));
           }
 
@@ -85,9 +105,9 @@ export default function VolunteerDashboard() {
       setOnboarded(true);
     });
     return () => unsub();
-  }, []);
+  }, [router]);
 
-  // ─── GPS: Watch volunteer position (single watcher) ─── ✅ FIXED (removed duplicate)
+  // ─── GPS: Watch volunteer position ───────────────────────────────
   useEffect(() => {
     if (!onboarded || !navigator.geolocation) return;
 
@@ -104,7 +124,7 @@ export default function VolunteerDashboard() {
     };
   }, [onboarded]);
 
-  // ─── Sync GPS to Firestore using uid ──────────────────── ✅ FIXED key
+  // ─── Sync GPS to Firestore ────────────────────────────────────────
   useEffect(() => {
     if (!db || !uid || !volunteerLocation) return;
     setDoc(doc(db, 'volunteers', uid), {
@@ -115,7 +135,7 @@ export default function VolunteerDashboard() {
     }, { merge: true }).catch(() => {});
   }, [volunteerLocation, uid, activeTask]);
 
-  // ─── Load SOS requests in real-time ─────────────────── ✅ FIXED (now actually called)
+  // ─── Load SOS requests in real-time ──────────────────────────────
   const loadRequests = useCallback(() => {
     if (!db) return;
     const q = query(collection(db, 'sos_requests'), where('status', '==', 'pending'));
@@ -132,7 +152,7 @@ export default function VolunteerDashboard() {
     return () => { if (unsub) unsub(); };
   }, [onboarded, loadRequests]);
 
-  // ─── 20-min countdown + 15-min reminder ────────────────────────
+  // ─── 20-min countdown + 15-min reminder ──────────────────────────
   useEffect(() => {
     if (!activeTask) {
       clearInterval(timerRef.current);
@@ -175,30 +195,52 @@ export default function VolunteerDashboard() {
     : timeLeft < 300 ? 'var(--brand-warning)'
     : 'var(--brand-success)';
 
-  // ─── Registration / Login ────────────────────────────────────────
+  // ─── Registration / Login ─────────────────────────────────────────
   const handleAuth = async (e) => {
     e.preventDefault();
     if (!auth) { alert('Offline Mode. Auth disabled.'); return; }
     setLoadingCode(true);
     try {
       await setPersistence(auth, browserSessionPersistence);
+
       if (authMode === 'register') {
+        // 🔐 Role password check — Admin/Pharmacy ke liye
+        if (selectedRole !== 'volunteer') {
+          if (!rolePassword || rolePassword !== ROLE_PASSWORDS[selectedRole]) {
+            alert(`❌ Invalid authorization password for ${selectedRole} role!\nContact administrator.`);
+            setLoadingCode(false);
+            return;
+          }
+        }
+
         const userCred = await createUserWithEmailAndPassword(auth, regData.email, regData.password);
+
         if (db) {
           try {
-            await setDoc(doc(db, 'volunteers', userCred.user.uid), {
-              name: regData.name,
+            // Volunteers collection — sirf volunteer ke liye
+            if (selectedRole === 'volunteer') {
+              await setDoc(doc(db, 'volunteers', userCred.user.uid), {
+                name: regData.name,
+                email: regData.email,
+                skills: regData.skills.length > 0 ? regData.skills : ['General Support'],
+                experience_level: regData.experience_level,
+                status: 'Active',
+                trust_score: 100,
+                updated_at: new Date().toISOString(),
+              });
+            }
+
+            // ✅ Users collection — sabke liye role set karo
+            await setDoc(doc(db, 'users', userCred.user.uid), {
+              role: selectedRole,
               email: regData.email,
-              skills: regData.skills.length > 0 ? regData.skills : ['General Support'],
-              experience_level: regData.experience_level,
-              status: 'Active',
-              trust_score: 100,
-              updated_at: new Date().toISOString(),
+              name: regData.name,
             });
-            alert('Registration successful! Access granted.');
+
+            alert(`✅ Registration successful!\nYou are registered as: ${selectedRole.toUpperCase()}`);
           } catch (error) {
-            console.error("Firestore Error on Registration:", error);
-            alert("Auth created, but failed to setup profile. You may need to update your details later.");
+            console.error('Firestore Error on Registration:', error);
+            alert('Auth created, but failed to setup profile. Contact admin.');
           }
         }
       } else {
@@ -228,7 +270,7 @@ export default function VolunteerDashboard() {
     setRequests([]);
   };
 
-  // ─── Task Actions ─────────────────────────────────────── ✅ FIXED uid key
+  // ─── Task Actions ─────────────────────────────────────────────────
   const updateTaskStatus = async (id, newStatus) => {
     if (db) await updateDoc(doc(db, 'sos_requests', id), { status: newStatus });
     const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
@@ -242,7 +284,7 @@ export default function VolunteerDashboard() {
   const syncTrustScore = async (currentUid, completed, assigned) => {
     if (!db || !currentUid) return;
     const score = assigned > 0 ? Math.round((completed / assigned) * 100) : 100;
-    await setDoc(doc(db, 'volunteers', currentUid), {  // ✅ FIXED: uses uid not name
+    await setDoc(doc(db, 'volunteers', currentUid), {
       trust_score: score,
       updated_at: new Date().toISOString(),
     }, { merge: true });
@@ -250,9 +292,8 @@ export default function VolunteerDashboard() {
 
   const handleAssign = async (req) => {
     setActiveTask(req);
-    // Bundle volunteer info into the sos document so the victim can track them
     if (db) {
-      await updateDoc(doc(db, 'sos_requests', req.id), { 
+      await updateDoc(doc(db, 'sos_requests', req.id), {
         status: 'assigned',
         assigned_volunteer: {
           name: regData.name || 'Emergency Responder',
@@ -261,15 +302,12 @@ export default function VolunteerDashboard() {
         }
       });
     }
-    
-    // Update local offline clone
     const local = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
     localStorage.setItem('local_sos_requests', JSON.stringify(
       local.map(r => r.id === req.id ? { ...r, status: 'assigned' } : r)
     ));
     setRequests(prev => prev.filter(r => r.id !== req.id));
     window.dispatchEvent(new Event('sos-updated'));
-
     setVolunteerLog(prev => ({ ...prev, assigned: prev.assigned + 1 }));
   };
 
@@ -295,47 +333,28 @@ export default function VolunteerDashboard() {
     });
   };
 
-  // ─── AI Composite Algorithmic Assignment ───────────────────────────
+  // ─── AI Composite Algorithmic Assignment ──────────────────────────
   const pendingTasks = requests.map(req => {
     const dist = (volunteerLocation && req.lat && req.lng) ? getDistanceKm(volunteerLocation.lat, volunteerLocation.lng, req.lat, req.lng) : 999;
-    
     let matchScore = 0;
-    // 1. Severity Base Assignment
     if (req.priority === 'HIGH' || req?.analysis?.severity === 'critical') matchScore += 1000;
     else if (req.priority === 'MEDIUM' || req?.analysis?.severity === 'high') matchScore += 500;
     else matchScore += 100;
-
-    // 2. Distance Penalty (-10 pts per km, capped at -500)
     matchScore -= Math.min(dist * 10, 500);
-
-    // 3. AI Skill Intersection Bonus (+300 pts per matching specialized skill)
     let skillOverlap = 0;
     if (req.analysis && req.analysis.suggested_specializations && regData.skills.length > 0) {
       req.analysis.suggested_specializations.forEach(aiSkill => {
-        if (regData.skills.includes(aiSkill)) {
-          skillOverlap++;
-          matchScore += 300;
-        }
+        if (regData.skills.includes(aiSkill)) { skillOverlap++; matchScore += 300; }
       });
     } else {
-      // Fallback matching if AI payload is older or simple
-      if (regData.skills.includes(req.type)) {
-        skillOverlap++;
-        matchScore += 300;
-      }
+      if (regData.skills.includes(req.type)) { skillOverlap++; matchScore += 300; }
     }
-
-    // 4. Verification Multiplier
     if (req.trustScore > 80) matchScore += 50;
-    
     return { ...req, _calcDist: dist, _matchScore: matchScore, _skillOverlap: skillOverlap };
   }).sort((a, b) => b._matchScore - a._matchScore);
 
-  const aiSuggestedTask = pendingTasks[0]; // The top task is now strictly the highest composite match
-
-  const trustScore = volunteerLog.assigned > 0
-    ? Math.round((volunteerLog.completed / volunteerLog.assigned) * 100)
-    : 100;
+  const aiSuggestedTask = pendingTasks[0];
+  const trustScore = volunteerLog.assigned > 0 ? Math.round((volunteerLog.completed / volunteerLog.assigned) * 100) : 100;
   const trustColor = trustScore >= 90 ? 'var(--brand-success)' : trustScore >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)';
 
   // ─── AUTH GATE ────────────────────────────────────────────────────
@@ -367,7 +386,7 @@ export default function VolunteerDashboard() {
               <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center' }}>
                 <button onClick={() => setAuthMode('forgot')} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.875rem' }}>Forgot password?</button>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-                  First time? <button onClick={() => setAuthMode('register')} style={{ background: 'none', border: 'none', color: 'var(--brand-primary)', cursor: 'pointer', fontWeight: 700 }}>Apply as Volunteer →</button>
+                  New user? <button onClick={() => setAuthMode('register')} style={{ background: 'none', border: 'none', color: 'var(--brand-primary)', cursor: 'pointer', fontWeight: 700 }}>Register Here →</button>
                 </p>
               </div>
             </>
@@ -375,8 +394,49 @@ export default function VolunteerDashboard() {
 
           {authMode === 'register' && (
             <>
-              <h2 style={{ fontSize: '2rem', fontWeight: 800, marginBottom: '1.5rem' }}>Register as Volunteer</h2>
+              <h2 style={{ fontSize: '2rem', fontWeight: 800, marginBottom: '1.5rem' }}>Create Account</h2>
               <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'left' }}>
+
+                {/* ─── Role Selection ─────────────────────────────── */}
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.75rem', fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Register As</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {[
+                      { value: 'volunteer', label: '🙋 Volunteer', desc: 'Help in field operations' },
+                      { value: 'admin', label: '🛡️ Admin', desc: 'Command center access' },
+                      { value: 'pharmacy', label: '💊 Pharmacy / NGO', desc: 'Manage supplies & inventory' },
+                    ].map(opt => (
+                      <label key={opt.value} onClick={() => { setSelectedRole(opt.value); setRolePassword(''); }} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.875rem', borderRadius: '10px', border: `1px solid ${selectedRole === opt.value ? 'var(--brand-primary)' : 'rgba(255,255,255,0.1)'}`, background: selectedRole === opt.value ? 'rgba(59,130,246,0.1)' : 'rgba(0,0,0,0.2)', cursor: 'pointer', transition: 'all 0.2s' }}>
+                        <input type="radio" name="role" value={opt.value} checked={selectedRole === opt.value} onChange={() => { setSelectedRole(opt.value); setRolePassword(''); }} style={{ accentColor: 'var(--brand-primary)' }} />
+                        <div>
+                          <p style={{ margin: 0, fontWeight: 700, fontSize: '0.9rem', color: 'white' }}>{opt.label}</p>
+                          <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{opt.desc}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 🔐 Role Password — sirf Admin/Pharmacy ke liye */}
+                {selectedRole !== 'volunteer' && (
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 700, fontSize: '0.875rem', color: 'var(--brand-warning)' }}>
+                      🔒 Authorization Password
+                    </label>
+                    <input
+                      required
+                      value={rolePassword}
+                      onChange={e => setRolePassword(e.target.value)}
+                      type="password"
+                      placeholder={`Enter ${selectedRole} authorization password`}
+                      style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', border: '1px solid rgba(245,158,11,0.4)', background: 'rgba(245,158,11,0.05)', color: 'white', outline: 'none' }}
+                    />
+                    <p style={{ margin: '0.4rem 0 0', fontSize: '0.75rem', color: 'var(--brand-warning)' }}>
+                      ⚠ Only authorized personnel can register as {selectedRole}
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Full Name</label>
                   <input required value={regData.name} onChange={e => setRegData({ ...regData, name: e.target.value })} type="text" placeholder="e.g. Rahul Sharma" style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.25)', color: 'white', outline: 'none' }} />
@@ -389,36 +449,43 @@ export default function VolunteerDashboard() {
                   <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Password</label>
                   <input required value={regData.password} onChange={e => setRegData({ ...regData, password: e.target.value })} type="password" placeholder="••••••••" minLength="6" style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.25)', color: 'white', outline: 'none' }} />
                 </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Specialized Skills (Select multiple)</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', background: 'rgba(0,0,0,0.25)', padding: '1rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                    {['Medical', 'Food', 'Rescue', 'Shelter', 'Medicine', 'Elder Support', 'Child Support', 'Pharmacy Needed', 'Blood Required', 'Security'].map(skill => (
-                      <label key={skill} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={regData.skills.includes(skill)}
-                          onChange={(e) => {
-                            if (e.target.checked) setRegData({ ...regData, skills: [...regData.skills, skill] });
-                            else setRegData({ ...regData, skills: regData.skills.filter(s => s !== skill) });
-                          }}
-                          style={{ accentColor: 'var(--brand-primary)', width: '16px', height: '16px' }}
-                        />
-                        {skill}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Experience Level</label>
-                  <select required value={regData.experience_level} onChange={e => setRegData({ ...regData, experience_level: e.target.value })} style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.25)', color: 'white', outline: 'none', appearance: 'none' }}>
-                    <option value="Beginner">Beginner (Willing to help)</option>
-                    <option value="Intermediate">Intermediate (Previous experience)</option>
-                    <option value="Expert">Expert (Trained personnel)</option>
-                    <option value="Professional">Professional (Active duty/Certified)</option>
-                  </select>
-                </div>
+
+                {/* Skills — sirf volunteer ke liye */}
+                {selectedRole === 'volunteer' && (
+                  <>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Specialized Skills (Select multiple)</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', background: 'rgba(0,0,0,0.25)', padding: '1rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                        {['Medical', 'Food', 'Rescue', 'Shelter', 'Medicine', 'Elder Support', 'Child Support', 'Pharmacy Needed', 'Blood Required', 'Security'].map(skill => (
+                          <label key={skill} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={regData.skills.includes(skill)}
+                              onChange={(e) => {
+                                if (e.target.checked) setRegData({ ...regData, skills: [...regData.skills, skill] });
+                                else setRegData({ ...regData, skills: regData.skills.filter(s => s !== skill) });
+                              }}
+                              style={{ accentColor: 'var(--brand-primary)', width: '16px', height: '16px' }}
+                            />
+                            {skill}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Experience Level</label>
+                      <select required value={regData.experience_level} onChange={e => setRegData({ ...regData, experience_level: e.target.value })} style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.25)', color: 'white', outline: 'none', appearance: 'none' }}>
+                        <option value="Beginner">Beginner (Willing to help)</option>
+                        <option value="Intermediate">Intermediate (Previous experience)</option>
+                        <option value="Expert">Expert (Trained personnel)</option>
+                        <option value="Professional">Professional (Active duty/Certified)</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
                 <button type="submit" disabled={loadingCode} style={{ width: '100%', padding: '1rem', borderRadius: '12px', background: 'linear-gradient(135deg, var(--brand-primary), #1d4ed8)', border: 'none', color: 'white', fontWeight: 700, fontSize: '1rem', cursor: loadingCode ? 'wait' : 'pointer', marginTop: '0.5rem' }}>
-                  {loadingCode ? 'Registering...' : 'Complete Registration'}
+                  {loadingCode ? 'Registering...' : `Register as ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}`}
                 </button>
                 <button type="button" onClick={() => setAuthMode('login')} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '0.75rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
                   ← Back to Login
@@ -450,7 +517,7 @@ export default function VolunteerDashboard() {
     );
   }
 
-  // ─── VOLUNTEER DASHBOARD ────────────────────────────────────────
+  // ─── VOLUNTEER DASHBOARD ──────────────────────────────────────────
   return (
     <div className="container" style={{ paddingTop: '1.5rem', paddingBottom: '4rem' }}>
 
@@ -592,7 +659,6 @@ export default function VolunteerDashboard() {
                 </div>
                 {timeLeft === 0 && <p style={{ color: 'var(--brand-danger)', fontWeight: 700, marginTop: '0.5rem', fontSize: '0.875rem' }}>⚠ Time limit reached!</p>}
               </div>
-
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem' }}>
                 <Navigation size={24} color="var(--brand-primary)" />
               </div>
@@ -600,7 +666,6 @@ export default function VolunteerDashboard() {
               <p style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
                 {activeTask.type} · {activeTask._calcDist < 999 ? `${activeTask._calcDist?.toFixed(1)} km away` : 'Navigating...'}
               </p>
-
               <div style={{ background: 'rgba(0,0,0,0.25)', padding: '1rem', borderRadius: '10px', marginBottom: '1.5rem' }}>
                 {activeTask.phone && (
                   <p style={{ fontSize: '0.9rem', color: 'var(--brand-warning)', fontWeight: 700, textAlign: 'center', marginBottom: '0.75rem' }}>
@@ -626,14 +691,12 @@ export default function VolunteerDashboard() {
                   </p>
                 )}
               </div>
-
               {activeTask.lat && activeTask.lng && (
                 <a href={`https://www.google.com/maps/dir/?api=1&destination=${activeTask.lat},${activeTask.lng}`} target="_blank" rel="noopener noreferrer"
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', width: '100%', padding: '0.875rem', borderRadius: '10px', background: '#4285F4', color: 'white', fontWeight: 700, fontSize: '0.95rem', textDecoration: 'none', marginBottom: '0.75rem' }}>
                   <Globe size={18} /> Open in Google Maps
                 </a>
               )}
-
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 <button onClick={handleResolve} style={{ width: '100%', padding: '0.875rem', borderRadius: '10px', background: 'linear-gradient(135deg, var(--brand-success), #059669)', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.95rem' }}>
                   <CheckCircle size={18} /> Mark as Completed ↑ Trust

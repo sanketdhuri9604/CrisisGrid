@@ -47,7 +47,7 @@ export default function HeaderNav() {
           )}
 
           {/* Sirf Pharmacy ko */}
-          {!loading && role === 'pharmacy' && (
+         {!loading && (role === 'volunteer' || !user) && (
             <Link href="/pharmacy" className="btn btn-secondary" style={{ padding: '0.4rem 1rem', fontSize: '0.875rem' }}>
               Log Supplies
             </Link>

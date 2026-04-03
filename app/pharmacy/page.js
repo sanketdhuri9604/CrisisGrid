@@ -30,11 +30,10 @@ export default function PharmacyNGO() {
         if (db) {
           try {
            const snap = await getDoc(doc(db, 'users', user.uid));
-            if (!snap.exists() || (snap.data().role !== 'pharmacy' && snap.data().role !== 'ngo')) {
-              console.warn('Unauthorized access blocked. Requires Pharmacy/NGO roles.');
-              router.push('/login');
-              return;
-            }
+if (!snap.exists() || snap.data().role !== 'pharmacy') {
+  router.push('/login');
+  return;
+}
           } catch (e) {
             console.error('Role check failed:', e);
           }
