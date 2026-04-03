@@ -3,9 +3,9 @@
 import dynamic from 'next/dynamic';
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { ShieldAlert, Clock, MapPin, CheckCircle, AlertTriangle, UserCheck, RefreshCw, LogOut } from 'lucide-react';
+import { ShieldAlert, Clock, MapPin, CheckCircle, AlertTriangle, UserCheck, LogOut, Phone, Eye } from 'lucide-react';
 import { auth, db } from '../utils/firebaseClient';
-import { collection, query, where, onSnapshot, updateDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 const Map = dynamic(() => import('../components/Map'), { ssr: false, loading: () => <div className="glass" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Map Engine...</div> });
@@ -13,43 +13,34 @@ const Map = dynamic(() => import('../components/Map'), { ssr: false, loading: ()
 export default function Dashboard() {
   const router = useRouter();
   const [filter, setFilter] = useState('ALL');
-  const [requests, setRequests] = useState(() => {
-    if (typeof window === 'undefined' || auth) return [];
-    try {
-      return JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [requests, setRequests] = useState([]);
   const [volunteers, setVolunteers] = useState([]);
   const [isAuthed, setIsAuthed] = useState(() => !auth);
-  const [userEmail, setUserEmail] = useState('');
   const [loading, setLoading] = useState(() => !!auth && !!db);
   const [lastUpdated, setLastUpdated] = useState(null);
   const unsubRefs = useRef([]);
 
-  // ─── Auth Gate ────────────────────────────────────────────────
+  // ─── Auth Gate — sirf admin ───────────────────────────────────
   useEffect(() => {
     if (!auth) return;
     const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        if (db) {
-          try {
-            const snap = await getDoc(doc(db, 'users', user.uid));
-            if (!snap.exists() || snap.data().role !== 'admin') {
-              console.warn('Unauthorized access blocked. Requires Admin roles.');
-              router.push('/login');
-              return;
-            }
-          } catch (e) {
-            console.error('Role check failed:', e);
+      if (!user) { router.push('/login'); return; }
+      if (db) {
+        try {
+          const snap = await getDoc(doc(db, 'users', user.uid));
+          if (!snap.exists() || snap.data().role !== 'admin') {
+            await signOut(auth);
+            router.push('/login');
+            return;
           }
+        } catch (e) {
+          await signOut(auth);
+          router.push('/login');
+          return;
         }
-        setIsAuthed(true);
-        setUserEmail(user.email || '');
-      } else {
-        router.push('/login');
       }
+      setIsAuthed(true);
+      setLoading(false);
     });
     return () => unsub();
   }, [router]);
@@ -59,49 +50,49 @@ export default function Dashboard() {
     router.push('/login');
   };
 
-  // ─── Real-Time Listeners (replaces one-time getDocs) ──────────
+  // ─── Real-Time Listeners ──────────────────────────────────────
   useEffect(() => {
-    if (!isAuthed) return;
+    if (!isAuthed || !db) return;
 
-    if (!db) {
-      // Offline mode — read from localStorage
-      const handleLocalUpdate = () => {
-        const updated = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
-        setRequests(updated);
-        setLastUpdated(new Date());
-      };
-      window.addEventListener('sos-updated', handleLocalUpdate);
-      return () => window.removeEventListener('sos-updated', handleLocalUpdate);
-    }
-
-    // ✅ FIX: onSnapshot replaces getDocs — dashboard now updates automatically
     const sosUnsub = onSnapshot(collection(db, 'sos_requests'), (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Newest first
+      data.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
       setRequests(data);
       setLastUpdated(new Date());
       setLoading(false);
-    }, (err) => {
-      console.error('SOS listener error:', err);
-      setLoading(false);
-    });
+    }, () => setLoading(false));
 
     const volUnsub = onSnapshot(collection(db, 'volunteers'), (snap) => {
-      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setVolunteers(data);
+      setVolunteers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
     unsubRefs.current = [sosUnsub, volUnsub];
     return () => unsubRefs.current.forEach(fn => fn());
   }, [isAuthed]);
 
-  const handleAssign = async (reqId) => {
-    if (db) await updateDoc(doc(db, 'sos_requests', reqId), { status: 'assigned' });
-    setRequests(prev => prev.map(r => r.id === reqId ? { ...r, status: 'assigned' } : r));
+  // ─── Filter logic ─────────────────────────────────────────────
+  const displayedRequests = filter === 'ALL'
+    ? requests
+    : filter === 'PENDING' || filter === 'ACCEPTED' || filter === 'RESOLVED'
+    ? requests.filter(r => r.status?.toUpperCase() === filter)
+    : requests.filter(r => r.priority === filter);
+
+  const pendingCount  = requests.filter(r => r.status === 'pending').length;
+  const acceptedCount = requests.filter(r => r.status === 'accepted').length;
+  const isHighRisk    = pendingCount > 2;
+
+  const statusColor = (status) => {
+    if (status === 'accepted') return 'var(--brand-warning)';
+    if (status === 'resolved') return 'var(--brand-success)';
+    return 'var(--brand-danger)';
   };
 
-  const displayedRequests = filter === 'ALL' ? requests : requests.filter(r => r.priority === filter);
-  const pendingCount = requests.filter(r => r.status === 'pending').length;
-  const isHighRisk = pendingCount > 2;
+  const statusLabel = (status) => {
+    if (status === 'accepted') return '⏳ Volunteer En Route';
+    if (status === 'resolved') return '✓ Resolved';
+    return '🔴 Awaiting Volunteer';
+  };
 
   if (!isAuthed) {
     return (
@@ -123,10 +114,15 @@ export default function Dashboard() {
           <h1 style={{ fontSize: '1.625rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <ShieldAlert color="var(--brand-danger)" size={26} /> Admin Command Center
           </h1>
+          {/* Read Only badge */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.75rem', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)', borderRadius: '50px' }}>
+            <Eye size={12} color="#a78bfa" />
+            <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#a78bfa' }}>VIEW ONLY</span>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.75rem', background: db ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', border: `1px solid ${db ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`, borderRadius: '50px' }}>
-            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: db ? 'var(--brand-success)' : 'var(--brand-warning)', boxShadow: db ? '0 0 6px var(--brand-success)' : 'none', animation: db ? 'pulseGlow 2s infinite' : 'none' }} />
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: db ? 'var(--brand-success)' : 'var(--brand-warning)', animation: db ? 'pulseGlow 2s infinite' : 'none' }} />
             <span style={{ fontSize: '0.7rem', fontWeight: 700, color: db ? 'var(--brand-success)' : 'var(--brand-warning)' }}>
-              {db ? 'LIVE — AUTO UPDATING' : 'OFFLINE MODE'}
+              {db ? 'LIVE' : 'OFFLINE'}
             </span>
           </div>
         </div>
@@ -135,51 +131,53 @@ export default function Dashboard() {
           <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Connecting...'}
           </span>
+          {/* Status filter tabs */}
           <div className="glass flex items-center" style={{ padding: '0.35rem', borderRadius: '10px' }}>
-            {['ALL', 'HIGH', 'MEDIUM', 'LOW'].map(f => (
-              <button key={f} onClick={() => setFilter(f)} style={{ background: filter === f ? 'rgba(255,255,255,0.12)' : 'transparent', border: 'none', color: filter === f ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.3rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '0.78rem' }}>
+            {['ALL', 'HIGH', 'MEDIUM', 'PENDING', 'ACCEPTED', 'RESOLVED'].map(f => (
+              <button key={f} onClick={() => setFilter(f)} style={{ background: filter === f ? 'rgba(255,255,255,0.12)' : 'transparent', border: 'none', color: filter === f ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.3rem 0.65rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '0.72rem' }}>
                 {f}
               </button>
             ))}
           </div>
-          <button onClick={handleLogout} title="Logout" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '0.45rem 0.75rem', color: 'var(--brand-danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
+          <button onClick={handleLogout} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '0.45rem 0.75rem', color: 'var(--brand-danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
             <LogOut size={13} /> Logout
           </button>
         </div>
       </div>
 
-      {/* Heatmap Alert */}
+      {/* High Risk Alert */}
       {isHighRisk && (
         <div className="glass animate-slide-up" style={{ padding: '0.875rem 1.5rem', marginBottom: '1.5rem', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)' }}>
           <div className="flex items-center gap-3">
             <AlertTriangle size={24} color="var(--brand-danger)" />
             <div>
-              <p style={{ color: 'var(--brand-danger)', fontWeight: 800, margin: 0, fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '1px' }}>⚠ AI Heatmap Alert — High Risk Zone Detected</p>
-              <p style={{ margin: '0.15rem 0 0', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{pendingCount} unassigned SOS signals clustered. Routing EMS dispersal automatically.</p>
+              <p style={{ color: 'var(--brand-danger)', fontWeight: 800, margin: 0, fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '1px' }}>⚠ High Risk — {pendingCount} SOS Awaiting Volunteer</p>
+              <p style={{ margin: '0.15rem 0 0', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>Volunteers have not accepted these requests yet.</p>
             </div>
           </div>
         </div>
       )}
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
         {[
           { label: 'Total SOS', value: requests.length, color: 'var(--brand-primary)', shadow: 'rgba(59,130,246,0.2)' },
-          { label: 'Pending', value: requests.filter(r => r.status === 'pending').length, color: 'var(--brand-danger)', shadow: 'rgba(239,68,68,0.2)' },
-          { label: 'Assigned', value: requests.filter(r => r.status === 'assigned').length, color: 'var(--brand-warning)', shadow: 'rgba(245,158,11,0.2)' },
+          { label: 'Pending', value: pendingCount, color: 'var(--brand-danger)', shadow: 'rgba(239,68,68,0.2)' },
+          { label: 'Accepted', value: acceptedCount, color: 'var(--brand-warning)', shadow: 'rgba(245,158,11,0.2)' },
           { label: 'Resolved', value: requests.filter(r => r.status === 'resolved').length, color: 'var(--brand-success)', shadow: 'rgba(16,185,129,0.2)' },
+          { label: 'Volunteers', value: volunteers.length, color: '#a78bfa', shadow: 'rgba(139,92,246,0.2)' },
         ].map((s, i) => (
           <div key={s.label} className={`glass animate-slide-up delay-${i+1}`} style={{ padding: '1.5rem', textAlign: 'center', borderBottom: `2px solid ${s.color}`, boxShadow: `0 8px 32px -4px ${s.shadow}` }}>
-            <p style={{ fontSize: '2.5rem', fontWeight: 900, color: s.color, margin: 0, lineHeight: 1, textShadow: `0 0 20px ${s.shadow}` }}>{s.value}</p>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '0.5rem 0 0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>{s.label}</p>
+            <p style={{ fontSize: '2.5rem', fontWeight: 900, color: s.color, margin: 0, lineHeight: 1 }}>{s.value}</p>
+            <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', margin: '0.5rem 0 0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>{s.label}</p>
           </div>
         ))}
       </div>
 
       <div className="flex" style={{ gap: '1.5rem', minHeight: '600px', flexWrap: 'wrap' }}>
 
-        {/* SOS Feed */}
-        <div style={{ flex: '1 1 300px', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '680px', overflowY: 'auto', paddingRight: '4px' }}>
+        {/* SOS Feed — READ ONLY */}
+        <div style={{ flex: '1 1 300px', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '700px', overflowY: 'auto', paddingRight: '4px' }}>
           {loading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="glass" style={{ padding: '1.25rem' }}>
@@ -190,20 +188,22 @@ export default function Dashboard() {
           ) : displayedRequests.length === 0 ? (
             <div className="glass" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <CheckCircle size={36} style={{ margin: '0 auto 1rem auto', color: 'var(--brand-success)', opacity: 0.4 }} />
-              <p style={{ fontWeight: 600 }}>No SOS requests yet</p>
-              <p style={{ fontSize: '0.8rem', marginTop: '0.4rem', opacity: 0.6 }}>Real-time updates will appear automatically when victims send SOS.</p>
+              <p style={{ fontWeight: 600 }}>No requests in this filter</p>
             </div>
           ) : displayedRequests.map(req => (
             <div key={req.id} className="glass" style={{ padding: '1.25rem', flexShrink: 0, borderLeft: `4px solid ${req.priority === 'HIGH' ? 'var(--brand-danger)' : req.priority === 'MEDIUM' ? 'var(--brand-warning)' : 'var(--brand-success)'}` }}>
+
+              {/* Priority + Time */}
               <div className="flex justify-between items-center" style={{ marginBottom: '0.6rem' }}>
-                <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '5px', background: req.priority === 'HIGH' ? 'rgba(239,68,68,0.15)' : req.priority === 'MEDIUM' ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)', color: req.priority === 'HIGH' ? 'var(--brand-danger)' : req.priority === 'MEDIUM' ? 'var(--brand-warning)' : 'var(--brand-success)', letterSpacing: '0.5px' }}>
+                <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '5px', background: req.priority === 'HIGH' ? 'rgba(239,68,68,0.15)' : req.priority === 'MEDIUM' ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)', color: req.priority === 'HIGH' ? 'var(--brand-danger)' : req.priority === 'MEDIUM' ? 'var(--brand-warning)' : 'var(--brand-success)' }}>
                   {req.priority || 'UNKNOWN'}
                 </span>
                 <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
                   <Clock size={10} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
-                  {req.timestamp || (req.created_at ? new Date(req.created_at).toLocaleTimeString() : 'Just now')}
+                  {req.created_at ? new Date(req.created_at).toLocaleTimeString() : 'Just now'}
                 </span>
               </div>
+
               <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.25rem' }}>{req.type || 'Emergency Signal'}</h3>
 
               {req.phone && (
@@ -221,22 +221,44 @@ export default function Dashboard() {
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', margin: '0.3rem 0' }}>&quot;{req.notes}&quot;</p>
               )}
 
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.85rem', lineHeight: 1.4 }}>
-                {req.description ? req.description.split('📍 Location:')[0].trim() : 'No additional description provided.'}
-              </p>
+              {/* ✅ Assigned Volunteer Info — admin sirf dekhe */}
+              {req.status === 'accepted' && req.assigned_volunteer && (
+                <div style={{ margin: '0.75rem 0', padding: '0.75rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px' }}>
+                  <p style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--brand-warning)', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 0.4rem' }}>
+                    Volunteer Accepted
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'white', fontWeight: 700 }}>
+                      👤 {req.assigned_volunteer.name}
+                    </span>
+                    {req.assigned_volunteer.phone && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--brand-success)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Phone size={11} /> {req.assigned_volunteer.phone}
+                      </span>
+                    )}
+                  </div>
+                  {req.assigned_volunteer.skills && (
+                    <p style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', margin: '0.25rem 0 0' }}>
+                      🛠 {Array.isArray(req.assigned_volunteer.skills) ? req.assigned_volunteer.skills.join(', ') : req.assigned_volunteer.skills}
+                    </p>
+                  )}
+                  {req.accepted_at && (
+                    <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', margin: '0.2rem 0 0' }}>
+                      ⏱ Accepted at {new Date(req.accepted_at).toLocaleTimeString()}
+                    </p>
+                  )}
+                </div>
+              )}
 
-              <div className="flex justify-between items-center">
+              {/* Status + GPS — NO action buttons for admin */}
+              <div className="flex justify-between items-center" style={{ marginTop: '0.5rem' }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                   <MapPin size={11} color="var(--brand-primary)" />
                   {req.lat && req.lng ? `${parseFloat(req.lat).toFixed(4)}°, ${parseFloat(req.lng).toFixed(4)}°` : 'No GPS'}
                 </span>
-                {req.status === 'pending' || !req.status ? (
-                  <button onClick={() => handleAssign(req.id)} className="btn btn-primary" style={{ padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.75rem' }}>Assign</button>
-                ) : (
-                  <span style={{ fontSize: '0.72rem', color: req.status === 'resolved' ? 'var(--brand-success)' : 'var(--brand-warning)', fontWeight: 700 }}>
-                    {req.status === 'resolved' ? '✓ Resolved' : '⏳ Assigned'}
-                  </span>
-                )}
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: statusColor(req.status), padding: '0.2rem 0.5rem', background: `${statusColor(req.status)}18`, borderRadius: '6px', border: `1px solid ${statusColor(req.status)}40` }}>
+                  {statusLabel(req.status)}
+                </span>
               </div>
             </div>
           ))}
@@ -247,25 +269,34 @@ export default function Dashboard() {
           <Map requests={displayedRequests} />
         </div>
 
-        {/* Trust Score Sidebar */}
+        {/* Volunteer Trust Sidebar */}
         <div style={{ flex: '1 1 220px', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <UserCheck size={14} color="var(--brand-primary)" /> Responder Trust Matrix
+            <UserCheck size={14} color="var(--brand-primary)" /> Volunteer Status
           </p>
           {volunteers.length === 0 ? (
-            <div className="glass" style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem', opacity: 0.7 }}>No volunteers registered yet.</div>
-          ) : volunteers.map(vol => (
-            <div key={vol.id} className="glass" style={{ padding: '1rem', borderLeft: `3px solid ${vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)'}` }}>
-              <div className="flex justify-between items-center" style={{ marginBottom: '0.25rem' }}>
-                <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>{vol.name}</span>
-                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)' }}>{vol.trust_score ?? 100}%</span>
+            <div className="glass" style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem', opacity: 0.7 }}>No volunteers registered.</div>
+          ) : volunteers.map(vol => {
+            const onMission = requests.find(r => r.assigned_volunteer?.id === vol.id && r.status === 'accepted');
+            return (
+              <div key={vol.id} className="glass" style={{ padding: '1rem', borderLeft: `3px solid ${vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)'}` }}>
+                <div className="flex justify-between items-center" style={{ marginBottom: '0.25rem' }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>{vol.name}</span>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 800, color: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)' }}>{vol.trust_score ?? 100}%</span>
+                </div>
+                <p style={{ margin: '0 0 0.3rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                  {Array.isArray(vol.skills) ? vol.skills.join(', ') : vol.skills || 'General'}
+                </p>
+                {/* ✅ Mission status */}
+                <p style={{ margin: '0 0 0.4rem', fontSize: '0.68rem', fontWeight: 700, color: onMission ? 'var(--brand-warning)' : 'var(--brand-success)' }}>
+                  {onMission ? `⏳ On Mission: ${onMission.type}` : '✓ Available'}
+                </p>
+                <div style={{ height: '3px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px' }}>
+                  <div style={{ height: '100%', width: `${vol.trust_score ?? 100}%`, background: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)', borderRadius: '2px', transition: 'width 0.6s ease' }} />
+                </div>
               </div>
-              <p style={{ margin: '0 0 0.5rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>{vol.skills || 'General'} · {vol.status || 'Active'}</p>
-              <div style={{ height: '3px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px' }}>
-                <div style={{ height: '100%', width: `${vol.trust_score ?? 100}%`, background: vol.trust_score >= 90 ? 'var(--brand-success)' : vol.trust_score >= 70 ? 'var(--brand-warning)' : 'var(--brand-danger)', borderRadius: '2px', transition: 'width 0.6s ease' }} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
       </div>
