@@ -46,7 +46,7 @@ export async function transmitSOS(requestData) {
         const existing = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
         const cleaned = existing.filter(r => r.id !== localId);
         localStorage.setItem('local_sos_requests', JSON.stringify(cleaned));
-        // Notify dashboard to reload (it will now get clean Firestore data)
+        // Notify dashboard to reload
         window.dispatchEvent(new Event('sos-updated'));
       }
 
@@ -68,6 +68,7 @@ export async function transmitSOS(requestData) {
     status: 'queued',
     platform: 'IndexedDB (Offline Fallback)',
     message: 'Data secured locally. Will sync when online.',
+    data: { id: localId }
   };
 }
 
@@ -80,16 +81,25 @@ export async function processOfflineQueue() {
   for (const record of queue) {
     try {
       const { id, _localId, _localTimestamp, ...payload } = record;
-      await addDoc(collection(db, 'sos_requests'), {
+      const docRef = await addDoc(collection(db, 'sos_requests'), {
         ...payload,
         created_at: new Date().toISOString(),
       });
       await idb.delete(STORE_NAME, id);
 
-      // Also clean corresponding localStorage entry
+      // Clean local_sos_requests
       if (typeof window !== 'undefined' && _localId) {
         const existing = JSON.parse(localStorage.getItem('local_sos_requests') || '[]');
         localStorage.setItem('local_sos_requests', JSON.stringify(existing.filter(r => r.id !== _localId)));
+
+        // VERY IMPORTANT: Update active_sos_session if it's currently null
+        const activeSess = JSON.parse(localStorage.getItem('active_sos_session') || 'null');
+        if (activeSess && (activeSess.id === null || activeSess.id === _localId)) {
+          activeSess.id = docRef.id;
+          activeSess.syncStatus = 'synced';
+          localStorage.setItem('active_sos_session', JSON.stringify(activeSess));
+          window.dispatchEvent(new CustomEvent('sos-session-synced', { detail: activeSess }));
+        }
       }
     } catch (err) {
       console.error('Queue sync error:', err.message);

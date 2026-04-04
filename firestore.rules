@@ -2,9 +2,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Core function checking if user has a specific role documented
+    // Core function checking if user has a specific role
     function getRole() {
-      return get(/databases/$(database)/documents/volunteers/$(request.auth.uid)).data.role;
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
     }
 
     // Admins have god-mode read/write over everything
@@ -12,37 +12,33 @@ service cloud.firestore {
       allow read, write: if request.auth != null && getRole() == 'admin';
     }
 
-    // ─── SOS Requests Collection ───
+    // ─── Users Collection ───────────────────────────────────────
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ─── SOS Requests ───────────────────────────────────────────
+    // Public read: victims check their own SOS status without login (guest mode)
     match /sos_requests/{requestId} {
-      // Anyone can create an SOS (even unauthenticated users submitting emergency forms)
       allow create: if true;
-      // Any authenticated user (Volunteers, Admins, Pharmacy) can read SOS requests
-      allow read: if request.auth != null;
-      // Only authenticated users can update (e.g., Volunteer taking assignment)
+      allow read: if true;  // Guest mode — victim tracks their SOS without auth
       allow update: if request.auth != null;
-      // Nobody except admin can delete
       allow delete: if request.auth != null && getRole() == 'admin';
     }
 
-    // ─── Volunteers Collection ───
+    // ─── Volunteers Collection ──────────────────────────────────
     match /volunteers/{volunteerId} {
-      // Anyone can create their initial volunteer signup record
       allow create: if request.auth != null && request.auth.uid == volunteerId;
-      // Any authenticated user can read
       allow read: if request.auth != null;
-      // Users can modify their own document (Trust scores, etc) or Admin can
       allow update: if request.auth != null && (request.auth.uid == volunteerId || getRole() == 'admin');
-      // Only Admin can delete a volunteer
       allow delete: if request.auth != null && getRole() == 'admin';
     }
 
-    // ─── Pharmacy Resources Collection ───
-    match /resources/{resourceId} {
-      // Pharmacy/NGO can add items
-      allow create, update: if request.auth != null && (getRole() == 'pharmacy' || getRole() == 'ngo');
-      // Anyone can read resources
+    // ─── Pharmacy Resources ─────────────────────────────────────
+    match /pharmacy_resources/{resourceId} {
+      allow create, update: if request.auth != null && (getRole() == 'pharmacy' || getRole() == 'ngo' || getRole() == 'admin');
       allow read: if true;
-      // Only Admin or the creator can delete
       allow delete: if request.auth != null && (getRole() == 'admin' || getRole() == 'pharmacy');
     }
   }

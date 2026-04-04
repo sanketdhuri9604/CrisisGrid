@@ -1,21 +1,55 @@
 {
-  "name": "CrisisGrid Engine",
+  "name": "CrisisGrid — Emergency Coordination",
   "short_name": "CrisisGrid",
   "description": "Offline-first AI-powered coordination platform for disasters and emergencies.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#050a11",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "orientation": "any",
+  "background_color": "#020610",
   "theme_color": "#ef4444",
+  "categories": ["emergency", "utilities", "health"],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
-  ]
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Send SOS",
+      "short_name": "SOS",
+      "description": "Send an emergency SOS immediately",
+      "url": "/",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Find Medicine",
+      "short_name": "Medicine",
+      "description": "Find medicine and supplies near you",
+      "url": "/pharmacy",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Volunteer Portal",
+      "short_name": "Volunteer",
+      "description": "Access volunteer missions",
+      "url": "/volunteer",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "related_applications": [],
+  "lang": "en",
+  "dir": "ltr"
 }
