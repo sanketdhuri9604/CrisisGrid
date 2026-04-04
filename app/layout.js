@@ -15,6 +15,8 @@ export const metadata = {
   },
   formatDetection: { telephone: false },
   icons: {
+    icon: '/icon.png?v=2',
+    shortcut: '/icon.png?v=2',
     apple: '/icon-192.png',
   },
   openGraph: {
