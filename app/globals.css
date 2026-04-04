@@ -842,3 +842,10 @@ h1, h2, h3, h4, h5 { letter-spacing: -0.02em; line-height: 1.15; }
   .ambient-background, .header-nav, .mobile-menu-btn, .pwa-banner { display: none !important; }
   body { background: white; color: black; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   HIDE NEXT.JS DEV INDICATOR
+   ══════════════════════════════════════════════════════════ */
+nextjs-portal {
+  display: none !important;
+}
