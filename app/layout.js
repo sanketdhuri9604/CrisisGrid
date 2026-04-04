@@ -5,7 +5,7 @@ import PWAInstallBanner from './components/PWAInstallButton';
 import ServiceWorkerRegister from './components/ServiceWorkerRegister';
 
 export const metadata = {
-  title: 'CrisisGrid — Emergency Coordination Platform',
+  title: 'CrisisGrid | AI Emergency Response',
   description: 'Offline-first AI-powered emergency coordination for disasters. One tap SOS, real-time volunteer dispatch, medicine finder.',
   manifest: '/manifest.json',
   appleWebApp: {
